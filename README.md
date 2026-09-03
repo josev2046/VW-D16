@@ -31,7 +31,7 @@ A single dropdown handles both preset loading and pattern generation:
 
 | Selection | Function |
 | :--- | :--- |
-| `ROCK 1` · `ROCK 2` · `DISCO` · `BOSSA NOVA` · `ELECTRO` | Instantly loads a classic, genre-defining drum pattern across all four tracks. |
+| `ROCK 1` · `ROCK 2` · `MOTORIK` · `DISCO` · `BOSSA NOVA` · `ELECTRO` | Instantly loads a classic, genre-defining drum pattern across all four tracks. |
 | `RANDOMISE ALL` | Intelligently populates the entire 16-step matrix using weighted probabilities (hi-hats are denser than claps, for instance). |
 | `CLEAR ALL` | Wipes the grid on all four tracks. |
 
