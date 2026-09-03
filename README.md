@@ -1,5 +1,8 @@
 # VW-D16 Analogue Drum Machine
 
+[![DOI](https://zenodo.org/badge/1356307465.svg)](https://doi.org/10.5281/zenodo.22287271)
+
+
 ## Table of contents
 
 1. [Introduction](#1-introduction)
