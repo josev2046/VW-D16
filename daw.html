@@ -221,12 +221,17 @@
             <!-- TRACKS -->
             <div id="tracks-container" class="flex flex-col flex-1 justify-between"></div>
 
-            <div class="flex justify-between items-center pt-1 shrink-0">
-                <div class="flex items-center gap-2">
+            <div class="flex flex-wrap justify-between items-center gap-3 pt-1 shrink-0">
+                <div class="flex items-center gap-2 flex-wrap">
                     <span class="silkscreen-label tracking-widest opacity-60">RECORDER</span>
                     <button id="recordBtn" class="btn-small action-btn h-6 px-2">&#9679; REC</button>
                     <span id="recordStatus" class="digital-readout text-[8px] w-10 text-center">00:00</span>
-                    <a id="downloadBtn" href="#" class="btn-small action-btn h-6 px-2 btn-disabled">SAVE WAV</a>
+                    <span class="silkscreen-label opacity-50 mx-1">STEMS:</span>
+                    <a id="dl-master" href="#" class="btn-small action-btn h-6 px-2 btn-disabled">MSTR</a>
+                    <a id="dl-kick" href="#" class="btn-small action-btn h-6 px-2 btn-disabled">KICK</a>
+                    <a id="dl-snare" href="#" class="btn-small action-btn h-6 px-2 btn-disabled">SNR</a>
+                    <a id="dl-hihat" href="#" class="btn-small action-btn h-6 px-2 btn-disabled">HAT</a>
+                    <a id="dl-clap" href="#" class="btn-small action-btn h-6 px-2 btn-disabled">CLAP</a>
                 </div>
                 <div class="silkscreen-label tracking-widest opacity-80">&copy; 2026 JOSÉ VELÁZQUEZ MA / <a href="https://voltageandwave.co.uk/" target="_blank" rel="noopener noreferrer" class="hover:text-[#c83a2a] underline transition-colors">VOLTAGE &amp; WAVE</a></div>
             </div>
@@ -242,11 +247,6 @@
         const masterCompressor = audioCtx.createDynamicsCompressor();
         masterCompressor.threshold.value = -10; masterCompressor.knee.value = 30; masterCompressor.ratio.value = 12; masterCompressor.attack.value = 0.003; masterCompressor.release.value = 0.25; masterCompressor.connect(audioCtx.destination);
 
-        // --- Recording: tap the master bus post-compressor, without touching what's audible ---
-        const recordDest = audioCtx.createMediaStreamDestination();
-        masterCompressor.connect(recordDest);
-        let mediaRecorder = null, recordedChunks = [], isRecording = false, recordStartTime = 0, recordTimerInterval = null;
-
         const noiseBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 2, audioCtx.sampleRate);
         const output = noiseBuffer.getChannelData(0); for (let i = 0; i < noiseBuffer.length; i++) output[i] = Math.random() * 2 - 1;
 
@@ -256,6 +256,25 @@
             { id: 'hihat', name: 'HI-HAT', color: '#dca824', sliderClass: 'slider-hat', defaultTune: 8000, minTune: 5000, maxTune: 12000, defaultDecay: 0.1, defaultVol: 0.5, randWeight: 0.4 },
             { id: 'clap', name: 'CLAP', color: '#2ca05a', sliderClass: 'slider-clap', defaultTune: 1500, minTune: 800, maxTune: 3000, defaultDecay: 0.4, defaultVol: 0.7, randWeight: 0.1 }
         ];
+
+        // --- Per-track buses + recording taps (same approach as SQ-2046) ---
+        // Every voice for a track routes through its own gain bus before joining
+        // masterCompressor. Each bus also feeds its own MediaStreamDestination, so a
+        // single REC pass yields phase-locked, individually isolated stems (dry,
+        // pre-master) alongside the full master bounce.
+        const trackBuses = {};
+        const recordDest = { master: audioCtx.createMediaStreamDestination() };
+        masterCompressor.connect(recordDest.master);
+        trackConfig.forEach(tc => {
+            const bus = audioCtx.createGain();
+            bus.connect(masterCompressor);
+            trackBuses[tc.id] = bus;
+            recordDest[tc.id] = audioCtx.createMediaStreamDestination();
+            bus.connect(recordDest[tc.id]);
+        });
+
+        const STEMS = ['master', ...trackConfig.map(tc => tc.id)];
+        let mediaRecorders = {}, recordedChunks = {}, isRecording = false, recordStartTime = 0, recordTimerInterval = null, takeStamp = '';
 
         const tracks = {};
         trackConfig.forEach(tc => {
@@ -297,33 +316,33 @@
         // --- DSP SYNTHESIS ---
         function playKick(time, p) {
             const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
-            osc.connect(gain); gain.connect(masterCompressor);
+            osc.connect(gain); gain.connect(trackBuses.kick);
             osc.frequency.setValueAtTime(150, time); osc.frequency.exponentialRampToValueAtTime(p.tune, time + 0.05);
             gain.gain.setValueAtTime(p.vol, time); gain.gain.exponentialRampToValueAtTime(0.001, time + p.decay);
             osc.start(time); osc.stop(time + p.decay);
         }
         function playSnare(time, p) {
             const osc = audioCtx.createOscillator(), oscGain = audioCtx.createGain();
-            osc.type = 'triangle'; osc.connect(oscGain); oscGain.connect(masterCompressor);
+            osc.type = 'triangle'; osc.connect(oscGain); oscGain.connect(trackBuses.snare);
             osc.frequency.setValueAtTime(p.tune, time); oscGain.gain.setValueAtTime(p.vol * 0.7, time); oscGain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
             osc.start(time); osc.stop(time + 0.1);
             const noise = audioCtx.createBufferSource(), filter = audioCtx.createBiquadFilter(), noiseGain = audioCtx.createGain();
             noise.buffer = noiseBuffer; filter.type = 'highpass'; filter.frequency.value = 1000;
-            noise.connect(filter); filter.connect(noiseGain); noiseGain.connect(masterCompressor);
+            noise.connect(filter); filter.connect(noiseGain); noiseGain.connect(trackBuses.snare);
             noiseGain.gain.setValueAtTime(p.vol, time); noiseGain.gain.exponentialRampToValueAtTime(0.01, time + p.decay);
             noise.start(time); noise.stop(time + p.decay);
         }
         function playHiHat(time, p) {
             const noise = audioCtx.createBufferSource(), filter = audioCtx.createBiquadFilter(), gain = audioCtx.createGain();
             noise.buffer = noiseBuffer; filter.type = 'bandpass'; filter.frequency.value = p.tune;
-            noise.connect(filter); filter.connect(gain); gain.connect(masterCompressor);
+            noise.connect(filter); filter.connect(gain); gain.connect(trackBuses.hihat);
             gain.gain.setValueAtTime(p.vol, time); gain.gain.exponentialRampToValueAtTime(0.01, time + p.decay);
             noise.start(time); noise.stop(time + p.decay);
         }
         function playClap(time, p) {
             const noise = audioCtx.createBufferSource(), filter = audioCtx.createBiquadFilter(), gain = audioCtx.createGain();
             noise.buffer = noiseBuffer; filter.type = 'bandpass'; filter.frequency.value = p.tune;
-            noise.connect(filter); filter.connect(gain); gain.connect(masterCompressor);
+            noise.connect(filter); filter.connect(gain); gain.connect(trackBuses.clap);
             gain.gain.setValueAtTime(0, time);
             [0.01, 0.03, 0.05].forEach((t, i) => { gain.gain.linearRampToValueAtTime(p.vol, time + t); gain.gain.linearRampToValueAtTime(0, time + t + 0.01); });
             gain.gain.linearRampToValueAtTime(p.vol, time + 0.06); gain.gain.exponentialRampToValueAtTime(0.001, time + p.decay);
@@ -525,12 +544,16 @@
         window.addEventListener('pointerdown', async () => { if (audioCtx.state === 'suspended') await audioCtx.resume(); }, { once: true });
 
         // ==========================================================
-        // === DAW: Local WAV Recording (MediaRecorder -> decode -> WAV)
-        // === Master bus only (post-compressor), ported from VW-R1.
+        // === DAW: Local Multi-Track WAV Recording
+        // === One REC pass runs parallel MediaRecorders — master bus + each
+        // === track's own bus — so every stem comes from the same take and
+        // === stays phase-locked to the others. Stop decodes + WAV-encodes
+        // === all of them and lights up individual download chips.
         // ==========================================================
         const recordBtn = document.getElementById('recordBtn');
         const recordStatus = document.getElementById('recordStatus');
-        const downloadBtn = document.getElementById('downloadBtn');
+        const downloadEls = {};
+        STEMS.forEach(key => downloadEls[key] = document.getElementById(`dl-${key}`));
 
         if (typeof MediaRecorder === 'undefined') {
             recordBtn.classList.add('btn-disabled');
@@ -541,45 +564,35 @@
                 if (audioCtx.state === 'suspended') await audioCtx.resume();
 
                 if (!isRecording) {
-                    recordedChunks = [];
-                    let options;
-                    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-                        options = { mimeType: 'audio/webm;codecs=opus' };
-                    } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-                        options = { mimeType: 'audio/webm' };
-                    }
-                    mediaRecorder = new MediaRecorder(recordDest.stream, options);
+                    STEMS.forEach(key => {
+                        recordedChunks[key] = [];
+                        downloadEls[key].classList.add('btn-disabled');
 
-                    mediaRecorder.ondataavailable = (e) => {
-                        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
-                    };
-
-                    mediaRecorder.onstop = async () => {
-                        recordStatus.innerText = 'ENC';
-                        const rawBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-                        try {
-                            // Decode the captured audio and re-encode as PCM WAV, so the
-                            // download works directly in any DAW with no transcoding step.
-                            const arrayBuffer = await rawBlob.arrayBuffer();
-                            const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-                            const wavBlob = audioBufferToWav(decoded);
-                            downloadBtn.href = URL.createObjectURL(wavBlob);
-                            downloadBtn.download = recordingFilename('wav');
-                        } catch (err) {
-                            // Fallback: offer the original compressed capture if WAV encoding fails
-                            downloadBtn.href = URL.createObjectURL(rawBlob);
-                            downloadBtn.download = recordingFilename('webm');
+                        let options;
+                        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                            options = { mimeType: 'audio/webm;codecs=opus' };
+                        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+                            options = { mimeType: 'audio/webm' };
                         }
-                        downloadBtn.classList.remove('btn-disabled');
-                        recordStatus.innerText = '00:00';
-                    };
+                        const rec = new MediaRecorder(recordDest[key].stream, options);
+                        rec.ondataavailable = (e) => {
+                            if (e.data && e.data.size > 0) recordedChunks[key].push(e.data);
+                        };
+                        rec.onstop = () => encodeStem(key);
+                        mediaRecorders[key] = rec;
+                        rec.start();
+                    });
 
-                    mediaRecorder.start();
                     isRecording = true;
                     recordStartTime = Date.now();
+                    {
+                        const d = new Date(recordStartTime);
+                        const pad = (n) => String(n).padStart(2, '0');
+                        takeStamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+                    }
                     recordBtn.classList.add('rec-live');
                     recordBtn.innerText = '■ STOP';
-                    downloadBtn.classList.add('btn-disabled');
+                    recordStatus.innerText = '00:00';
 
                     recordTimerInterval = setInterval(() => {
                         const elapsed = Math.floor((Date.now() - recordStartTime) / 1000);
@@ -588,13 +601,37 @@
                         recordStatus.innerText = `${mm}:${ss}`;
                     }, 500);
                 } else {
-                    mediaRecorder.stop();
+                    STEMS.forEach(key => mediaRecorders[key] && mediaRecorders[key].stop());
                     isRecording = false;
                     clearInterval(recordTimerInterval);
                     recordBtn.classList.remove('rec-live');
                     recordBtn.innerText = '● REC';
+                    recordStatus.innerText = 'ENCODING';
                 }
             });
+        }
+
+        async function encodeStem(key) {
+            const el = downloadEls[key];
+            const rec = mediaRecorders[key];
+            const rawBlob = new Blob(recordedChunks[key], { type: (rec && rec.mimeType) || 'audio/webm' });
+            try {
+                // Decode the captured audio and re-encode as PCM WAV, so every stem
+                // drops straight into a DAW with no transcoding step.
+                const arrayBuffer = await rawBlob.arrayBuffer();
+                const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+                const wavBlob = audioBufferToWav(decoded);
+                el.href = URL.createObjectURL(wavBlob);
+                el.download = recordingFilename(key, 'wav');
+            } catch (err) {
+                // Fallback: offer the original compressed capture if WAV encoding fails
+                el.href = URL.createObjectURL(rawBlob);
+                el.download = recordingFilename(key, 'webm');
+            }
+            el.classList.remove('btn-disabled');
+            if (STEMS.every(k => !downloadEls[k].classList.contains('btn-disabled'))) {
+                recordStatus.innerText = '00:00';
+            }
         }
 
         function audioBufferToWav(buffer) {
@@ -647,12 +684,10 @@
             for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
         }
 
-        function recordingFilename(ext) {
-            const d = new Date();
-            const pad = (n) => String(n).padStart(2, '0');
-            const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-                          `_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
-            return `vwd16-recording-${stamp}.${ext}`;
+        function recordingFilename(stem, ext) {
+            // All stems from one take share the same timestamp (captured when REC
+            // was pressed), so they're easy to group back together in a DAW.
+            return `vwd16-${takeStamp}-${stem}.${ext}`;
         }
     </script>
 </body>
